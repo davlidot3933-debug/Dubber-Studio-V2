@@ -157,410 +157,116 @@ function encodeWAV(samples: Int16Array, sampleRate: number = 24000): Blob {
   return new Blob([view], { type: 'audio/wav' });
 }
 
-// Memoized Timeline Item for better performance
-interface TimelineSubtitleItemProps {
-  sub: Subtitle;
-  currentTime: number;
-  totalDuration: number;
+// Memoized Timeline Clip for better performance
+interface TimelineClipProps {
+  id: number;
+  type: 'subtitle' | 'audio';
+  startTime: number;
+  endTime: number;
+  text?: string;
   zoomLevel: number;
-  draggingSub: { id: number; offset: number; type: string } | null;
-  handleTimelineDrag: (subId: number, deltaX: number, type: 'text' | 'audio' | 'trim-audio-start' | 'trim-audio-end' | 'trim-text-start' | 'trim-text-end') => void;
-  handleTimelineDragEnd: (subId: number, info: any, type: 'text' | 'audio' | 'trim-audio-start' | 'trim-audio-end' | 'trim-text-start' | 'trim-text-end') => void;
-  handleToggleLink: (id: number) => void;
-  videoRef: React.RefObject<HTMLVideoElement>;
+  audioUrl?: string;
+  waveform?: number[];
+  audioTrimStart?: number;
+  audioTrimEnd?: number;
+  audioDuration?: number;
+  engine?: string;
+  voice?: string;
   isActive: boolean;
+  isSelected: boolean;
+  onSelect: () => void;
+  onDragStart: (e: React.PointerEvent, id: number, type: any) => void;
+  onDragMove: (e: React.PointerEvent) => void;
+  onDragEnd: (e: React.PointerEvent) => void;
   isOverlapping?: boolean;
 }
 
-const TimelineSubtitleItem = React.memo(({ 
-  sub, 
-  currentTime, 
-  totalDuration, 
-  zoomLevel, 
-  draggingSub, 
-  handleTimelineDrag, 
-  handleTimelineDragEnd, 
-  handleToggleLink,
-  videoRef,
-  isActive,
-  isOverlapping
-}: TimelineSubtitleItemProps) => {
-  const audioDur = Math.max(0.01, (sub.audioTrimEnd ?? sub.audioDuration ?? (sub.endTime - sub.startTime)) - (sub.audioTrimStart ?? 0));
-  const safeTotalDuration = totalDuration > 0 && Number.isFinite(totalDuration) ? totalDuration : 1;
-  const leftPerc = (sub.startTime / safeTotalDuration) * 100;
-  const widthPerc = Math.max(0.01, (sub.endTime - sub.startTime) / safeTotalDuration) * 100;
-  const isLinked = sub.isLinked ?? true;
-  
-  const isDraggingThisText = draggingSub?.id === sub.id && draggingSub?.type === 'text';
-  const isDraggingThisAudio = draggingSub?.id === sub.id && draggingSub?.type === 'audio';
-  const isTrimmingTextStart = draggingSub?.id === sub.id && draggingSub?.type === 'trim-text-start';
-  const isTrimmingTextEnd = draggingSub?.id === sub.id && draggingSub?.type === 'trim-text-end';
-  const isTrimmingAudioStart = draggingSub?.id === sub.id && draggingSub?.type === 'trim-audio-start';
-  const isTrimmingAudioEnd = draggingSub?.id === sub.id && draggingSub?.type === 'trim-audio-end';
-  
-  const dragDeltaTime = (draggingSub?.id === sub.id && zoomLevel > 0) ? (draggingSub.offset / zoomLevel) : 0;
-  
-  // Real-time calculated positions for visual feedback
-  let displayStartTime = sub.startTime;
-  let displayEndTime = sub.endTime;
-  let displayAudioStartTime = sub.audioStartTime ?? sub.startTime;
-  let displayAudioTrimStart = sub.audioTrimStart ?? 0;
-  let displayAudioTrimEnd = sub.audioTrimEnd ?? sub.audioDuration ?? (sub.endTime - sub.startTime);
+const TimelineClip = React.memo(({
+  id, type, startTime, endTime, text, zoomLevel, audioUrl, waveform,
+  audioTrimStart, audioTrimEnd, audioDuration, engine, voice,
+  isActive, isSelected, onSelect, onDragStart, onDragMove, onDragEnd, isOverlapping
+}: TimelineClipProps) => {
+  const duration = endTime - startTime;
+  const left = startTime * zoomLevel;
+  const width = Math.max(2, duration * zoomLevel);
 
-  if (isDraggingThisText) {
-    displayStartTime += dragDeltaTime;
-    displayEndTime += dragDeltaTime;
-    if (isLinked) displayAudioStartTime += dragDeltaTime;
-  } else if (isDraggingThisAudio) {
-    displayAudioStartTime += dragDeltaTime;
-    if (isLinked) {
-      displayStartTime += dragDeltaTime;
-      displayEndTime += dragDeltaTime;
-    }
-  } else if (isTrimmingTextStart) {
-    displayStartTime = Math.max(0, Math.min(sub.endTime - 0.1, sub.startTime + dragDeltaTime));
-    if (isLinked) displayAudioStartTime = displayStartTime;
-  } else if (isTrimmingTextEnd) {
-    displayEndTime = Math.max(sub.startTime + 0.1, sub.endTime + dragDeltaTime);
-    if (isLinked) {
-      // If linked, trimming text end usually doesn't affect audio unless we want it to
-    }
-  } else if (isTrimmingAudioStart) {
-    const audioDur = sub.audioDuration || (sub.endTime - sub.startTime);
-    const audioTrimEnd = sub.audioTrimEnd ?? audioDur;
-    displayAudioTrimStart = Math.max(0, Math.min(audioTrimEnd - 0.1, (sub.audioTrimStart ?? 0) + dragDeltaTime));
-    const actualDelta = displayAudioTrimStart - (sub.audioTrimStart ?? 0);
-    displayAudioStartTime = (sub.audioStartTime ?? sub.startTime) + actualDelta;
-    if (isLinked) displayStartTime = displayAudioStartTime;
-  } else if (isTrimmingAudioEnd) {
-    const audioDur = sub.audioDuration || (sub.endTime - sub.startTime);
-    displayAudioTrimEnd = Math.max((sub.audioTrimStart ?? 0) + 0.1, Math.min(audioDur, (sub.audioTrimEnd ?? audioDur) + dragDeltaTime));
-    if (isLinked) displayEndTime = displayAudioStartTime + (displayAudioTrimEnd - displayAudioTrimStart);
-  }
-
-  const displayLeftPerc = (displayStartTime / safeTotalDuration) * 100;
-  const displayWidthPerc = Math.max(0.01, (displayEndTime - displayStartTime) / safeTotalDuration) * 100;
-  const displayAudioLeftPerc = (displayAudioStartTime / safeTotalDuration) * 100;
-  const displayAudioWidthPerc = ((displayAudioTrimEnd - displayAudioTrimStart) / safeTotalDuration) * 100;
-
-  const playProgress = audioDur > 0 ? (currentTime - displayAudioStartTime) / audioDur : 0;
-  const safePlayProgress = Math.max(0, Math.min(1, Number.isFinite(playProgress) ? playProgress : 0));
-  const playheadX = safePlayProgress * (sub.waveform?.length || 0);
-
-  // Voice color mapping
-  const getTrackColor = () => {
-    if (isOverlapping) return 'bg-rose-500/30 border-rose-400 ring-rose-500/50';
-    if (sub.engine === 'google') return 'bg-emerald-500/20 border-emerald-500/60 text-emerald-300';
-    if (sub.engine === 'voxcpm') {
+  const getClipColor = () => {
+    if (type === 'subtitle') {
+      if (isActive) return 'bg-amber-400 border-amber-300 text-amber-950 ring-2 ring-amber-400/50';
+      if (audioUrl) return 'bg-emerald-500/20 border-emerald-500/60 text-emerald-300';
+      return 'bg-slate-800/50 border-slate-700 text-slate-400';
+    } else {
+      if (isOverlapping) return 'bg-rose-500/30 border-rose-400 ring-rose-500/50';
+      if (isActive) return 'bg-purple-900 border-purple-400 ring-1 ring-white/30';
       const colors: Record<string, string> = {
         alloy: 'bg-blue-500/20 border-blue-500/60 text-blue-300',
         echo: 'bg-indigo-500/20 border-indigo-500/60 text-indigo-300',
         fable: 'bg-purple-500/20 border-purple-500/60 text-purple-300',
-        onyx: 'bg-slate-500/20 border-slate-500/60 text-slate-300',
         nova: 'bg-pink-500/20 border-pink-500/60 text-pink-300',
         shimmer: 'bg-orange-500/20 border-orange-500/60 text-orange-300'
       };
-      return colors[sub.voice] || 'bg-violet-500/20 border-violet-500/60 text-violet-300';
+      return (voice && colors[voice]) || 'bg-violet-500/20 border-violet-500/60 text-violet-300';
     }
-    return 'bg-amber-500/20 border-amber-500/60 text-amber-300';
   };
 
-  const trackStyles = getTrackColor();
-
   return (
-    <div className="absolute inset-x-0 top-0 h-full pointer-events-none group/item">
-      {/* Connector line between Text and Audio if unlinked and both visible */}
-      {!isLinked && sub.audioUrl && (
-        <svg className="absolute inset-0 w-full h-full pointer-events-none opacity-20">
-          <line 
-            x1={`${displayLeftPerc + displayWidthPerc/2}%`} 
-            y1="40" 
-            x2={`${displayAudioLeftPerc + displayAudioWidthPerc/2}%`} 
-            y2="60" 
-            stroke="currentColor" 
-            strokeWidth="1" 
-            strokeDasharray="4 2"
-            className="text-slate-500"
+    <div 
+      className={`absolute top-1 bottom-1 rounded border cursor-grab active:cursor-grabbing transition-shadow timeline-clip ${getClipColor()} ${isSelected ? 'ring-2 ring-white z-50' : 'z-10'}`}
+      style={{ left, width }}
+      onPointerDown={(e) => {
+        onSelect();
+        onDragStart(e, id, type);
+      }}
+      onPointerMove={onDragMove}
+      onPointerUp={onDragEnd}
+    >
+      {type === 'subtitle' && (
+        <>
+          <div className="absolute inset-0 px-2 flex items-center justify-center overflow-hidden pointer-events-none">
+            <span className="text-[10px] truncate font-medium">{text}</span>
+          </div>
+          <div 
+             className="absolute left-0 top-0 bottom-0 w-2 hover:bg-white/20 cursor-ew-resize z-20"
+             onPointerDown={(e) => { e.stopPropagation(); onDragStart(e, id, 'trim-text-start'); }}
           />
-        </svg>
+          <div 
+             className="absolute right-0 top-0 bottom-0 w-2 hover:bg-white/20 cursor-ew-resize z-20"
+             onPointerDown={(e) => { e.stopPropagation(); onDragStart(e, id, 'trim-text-end'); }}
+          />
+        </>
       )}
 
-      {/* Subtitle Text Track */}
-      <motion.div 
-        drag="x"
-        dragMomentum={false}
-        dragElastic={0}
-        onDrag={(e, info) => handleTimelineDrag(sub.id, info.offset.x, 'text')}
-        onDragEnd={(e, info) => handleTimelineDragEnd(sub.id, info, 'text')}
-        className={`absolute top-1 h-10 rounded px-1 flex items-center border cursor-pointer group/sub transition-shadow pointer-events-auto ${
-          isActive 
-            ? (sub.audioUrl ? 'bg-amber-400 border-amber-300 text-amber-950 shadow-[0_0_15px_rgba(251,191,36,0.6)] z-30 scale-y-110 origin-bottom ring-2 ring-amber-400/50' : 'bg-amber-500/20 border-amber-400/80 text-amber-200 shadow-[0_0_8px_rgba(245,158,11,0.3)] z-20 scale-y-105')
-            : (sub.audioUrl 
-                ? 'bg-emerald-500/20 border-emerald-500/60 text-emerald-300 hover:border-emerald-400 z-10 hover:z-20' 
-                : 'bg-slate-800/50 border-slate-700 text-slate-400 hover:border-slate-500 z-0 hover:z-10')
-        } ${isLinked ? 'border-solid' : 'border-dashed border-slate-500/50'}`}
-        style={{ 
-          left: `${displayLeftPerc}%`, 
-          width: `${displayWidthPerc}%`, 
-          minWidth: '4px'
-        }}
-        onPointerDown={(e) => {
-          e.stopPropagation();
-          if (videoRef.current && Number.isFinite(displayStartTime)) {
-            videoRef.current.currentTime = displayStartTime;
-          }
-        }}
-      >
-        {/* Link Toggle Button */}
-        {sub.audioUrl && (
-          <button 
-            onClick={(e) => { e.stopPropagation(); handleToggleLink(sub.id); }}
-            className={`absolute -top-6 left-1/2 -translate-x-1/2 p-1 rounded-full bg-slate-800 border border-slate-700 shadow-lg opacity-0 group-hover/sub:opacity-100 transition-opacity z-50 pointer-events-auto ${isLinked ? 'text-amber-400 border-amber-500/50' : 'text-slate-400'}`}
-            title={isLinked ? "Unlink Audio" : "Link Audio"}
-          >
-            {isLinked ? <Link2 className="w-3 h-3" /> : <Link2Off className="w-3 h-3" />}
-          </button>
-        )}
-        
-        {/* Text Trim Info Tooltip */}
-        {(isTrimmingTextStart || isTrimmingTextEnd) && (
+      {type === 'audio' && (
+        <>
+          {waveform && waveform.length > 0 && (
+            <div 
+              className="absolute inset-0 h-full p-2 py-3 overflow-hidden pointer-events-none opacity-40"
+              style={{
+                left: -(audioTrimStart ?? 0) * zoomLevel,
+                width: (audioDuration ?? duration) * zoomLevel
+              }}
+            >
+              <svg className="w-full h-full" preserveAspectRatio="none" viewBox={`0 0 ${waveform.length} 100`}>
+                <path 
+                  d={waveform.map((v, i) => `M${i},${50 - v * 45} L${i},${50 + v * 45}`).join(' ')} 
+                  stroke="currentColor" 
+                  strokeWidth="1.5" 
+                />
+              </svg>
+            </div>
+          )}
           <div 
-            className="absolute -top-12 z-[60] pointer-events-none flex flex-col items-center"
-            style={{ 
-              left: isTrimmingTextStart ? '0%' : '100%',
-              transform: 'translateX(-50%)' 
-            }}
-          >
-            <div className="bg-slate-900 border border-amber-500 rounded px-2 py-1 shadow-[0_0_15px_rgba(245,158,11,0.3)] flex flex-col items-center min-w-[60px]">
-              <div className="text-[8px] text-amber-500 font-bold uppercase tracking-wider leading-none mb-1">Duration</div>
-              <div className="text-xs text-white font-mono font-bold leading-none">
-                {(displayEndTime - displayStartTime).toFixed(2)}s
-              </div>
-              <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-slate-900 border-r border-b border-amber-500 rotate-45" />
-            </div>
-          </div>
-        )}
-        
-        {/* Left Trim Handle (Text) */}
-        <div 
-          className="absolute left-0 top-0 bottom-0 w-3 hover:bg-white/20 cursor-ew-resize z-40 transition-colors flex items-center justify-center group/trim-text-l text-white pointer-events-auto shadow-inner"
-          onPointerDown={(e) => e.stopPropagation()}
-        >
-          <motion.div
-            drag="x"
-            dragMomentum={false}
-            dragElastic={0}
-            onDrag={(e, info) => handleTimelineDrag(sub.id, info.offset.x, 'trim-text-start')}
-            onDragEnd={(e, info) => handleTimelineDragEnd(sub.id, info, 'trim-text-start')}
-            className={`w-1.5 h-4 rounded-full transition-all ${isTrimmingTextStart ? 'bg-amber-400 scale-x-150' : 'bg-white/30 group-hover/sub:bg-white/60'}`}
+             className="absolute left-0 top-0 bottom-0 w-2 hover:bg-white/20 cursor-ew-resize z-20"
+             onPointerDown={(e) => { e.stopPropagation(); onDragStart(e, id, 'trim-audio-start'); }}
           />
-        </div>
-
-        {/* Right Trim Handle (Text) */}
-        <div 
-          className="absolute right-0 top-0 bottom-0 w-3 hover:bg-white/20 cursor-ew-resize z-40 transition-colors flex items-center justify-center group/trim-text-r text-white pointer-events-auto shadow-inner"
-          onPointerDown={(e) => e.stopPropagation()}
-        >
-          <motion.div
-            drag="x"
-            dragMomentum={false}
-            dragElastic={0}
-            onDrag={(e, info) => handleTimelineDrag(sub.id, info.offset.x, 'trim-text-end')}
-            onDragEnd={(e, info) => handleTimelineDragEnd(sub.id, info, 'trim-text-end')}
-            className={`w-1.5 h-4 rounded-full transition-all ${isTrimmingTextEnd ? 'bg-amber-400 scale-x-150' : 'bg-white/30 group-hover/sub:bg-white/60'}`}
+          <div 
+             className="absolute right-0 top-0 bottom-0 w-2 hover:bg-white/20 cursor-ew-resize z-20"
+             onPointerDown={(e) => { e.stopPropagation(); onDragStart(e, id, 'trim-audio-end'); }}
           />
-        </div>
-
-        <div className="absolute inset-0 overflow-hidden flex items-center justify-center px-1 pointer-events-none">
-          <span className="text-[10px] whitespace-nowrap truncate font-medium drop-shadow-md pb-0.5 w-full text-center">
-             {sub.text}
-          </span>
-        </div>
-      </motion.div>
-
-      {/* Audio Clip Track */}
-      {sub.audioUrl && (
-        <div 
-          className="absolute inset-x-0 pointer-events-none" 
-          style={{ top: '48px', height: '40px' }}
-        >
-          <motion.div 
-            drag="x"
-            dragMomentum={false}
-            dragElastic={0}
-            onDrag={(e, info) => handleTimelineDrag(sub.id, info.offset.x, 'audio')}
-            onDragEnd={(e, info) => handleTimelineDragEnd(sub.id, info, 'audio')}
-            className={`absolute top-1 bottom-1 rounded flex items-center border cursor-pointer overflow-hidden group/audio transition-all duration-300 pointer-events-auto ${
-              isActive
-                ? `${isOverlapping ? 'bg-rose-950 border-rose-400 shadow-[0_0_15px_rgba(244,63,94,0.5)] hover:shadow-[0_0_25px_rgba(244,63,94,0.7)]' : 'bg-purple-900 border-purple-400 shadow-[0_0_15px_rgba(168,85,247,0.5)] hover:shadow-[0_0_25px_rgba(168,85,247,0.85)]'} z-40 scale-y-110 origin-top ring-1 ring-white/30`
-                : `${trackStyles} z-10 hover:border-white/60 hover:brightness-110 hover:shadow-lg ring-0`
-            } ${isLinked ? 'border-solid' : 'border-dashed'}`}
-            style={{ 
-              left: `${displayAudioLeftPerc}%`, 
-              width: `${displayAudioWidthPerc}%`, 
-              minWidth: '10px'
-            }}
-          >
-            {/* Overlap Warning Indicator */}
-            {isOverlapping && (
-              <div className="absolute inset-0 bg-[repeating-linear-gradient(45deg,transparent,transparent_10px,rgba(244,63,94,0.15)_10px,rgba(244,63,94,0.15)_20px)] pointer-events-none animate-pulse z-0" />
-            )}
-            
-            {/* Waveform Visualization - Optimized with single path */}
-            {sub.waveform && sub.waveform.length > 0 && (
-              <div className="absolute inset-0 w-full h-full px-1 py-1.5 overflow-hidden pointer-events-none">
-                <svg className="w-full h-full" preserveAspectRatio="none" viewBox={`0 0 ${sub.waveform.length} 100`}>
-                  <defs>
-                    <clipPath id={`wf-clip-${sub.id}`}>
-                      <rect 
-                        x="0" 
-                        y="0" 
-                        width={playheadX} 
-                        height="100" 
-                      />
-                    </clipPath>
-                  </defs>
-                  
-                  {/* Optimized path data for waveform */}
-                  {(() => {
-                    let d = "";
-                    for (let i = 0; i < sub.waveform.length; i++) {
-                      const val = Number.isFinite(sub.waveform[i]) ? sub.waveform[i] : 0;
-                      const h = val * 90;
-                      const y1 = 50 - h/2;
-                      const y2 = 50 + h/2;
-                      d += `M${i},${y1} L${i},${y2} `;
-                    }
-                    
-                    return (
-                      <>
-                        {/* Background Waveform (Unplayed) */}
-                        <path 
-                          d={d}
-                          strokeWidth="0.6"
-                          stroke="currentColor"
-                          strokeLinecap="round"
-                          className={isActive ? "text-purple-100/20" : "text-indigo-100/10"}
-                        />
-                        
-                        {/* Foreground Waveform (Played) */}
-                        <path 
-                          clipPath={`url(#wf-clip-${sub.id})`}
-                          d={d}
-                          strokeWidth="0.6"
-                          stroke="currentColor"
-                          strokeLinecap="round"
-                          className={`transition-all duration-300 ${isActive ? "text-amber-400 drop-shadow-[0_0_2px_rgba(251,191,36,0.5)] group-hover/audio:drop-shadow-[0_0_8px_rgba(251,191,36,0.9)] group-hover/audio:brightness-125" : "text-emerald-400 drop-shadow-[0_0_2px_rgba(52,211,153,0.5)] group-hover/audio:brightness-150"}`}
-                        />
-                      </>
-                    );
-                  })()}
-
-                  {/* Audio Playhead Indicator (Internal) */}
-                  {currentTime >= displayAudioStartTime && currentTime <= displayAudioStartTime + audioDur && (
-                    <rect 
-                      x={playheadX} 
-                      y="10" 
-                      width={0.8} 
-                      height="80" 
-                      fill="white"
-                      className="opacity-80"
-                      rx={0.4}
-                    />
-                  )}
-                </svg>
-              </div>
-            )}
-            
-            {!sub.waveform && (
-              <div className="absolute inset-0 flex items-center justify-center opacity-20 pointer-events-none">
-                 <div className="w-full h-1 bg-gradient-to-r from-transparent via-white/20 to-transparent animate-pulse" />
-              </div>
-            )}
-
-            {/* Trim Info Tooltip */}
-            {(isTrimmingAudioStart || isTrimmingAudioEnd) && (
-              <div 
-                className="absolute -top-14 z-[60] pointer-events-none flex flex-col items-center"
-                style={{ 
-                  left: isTrimmingAudioStart ? '0%' : '100%',
-                  transform: 'translateX(-50%)' 
-                }}
-              >
-                <div className="bg-slate-900 border border-purple-500 rounded px-2.5 py-1.5 shadow-[0_0_20px_rgba(168,85,247,0.4)] flex flex-col items-center min-w-[70px]">
-                  <div className="text-[9px] text-purple-400 font-bold uppercase tracking-wider leading-none mb-1">Duration</div>
-                  <div className="text-sm text-white font-mono font-bold leading-none">
-                    {(displayAudioTrimEnd - displayAudioTrimStart).toFixed(2)}s
-                  </div>
-                  <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-slate-900 border-r border-b border-purple-500 rotate-45" />
-                </div>
-              </div>
-            )}
-
-            {/* Audio Trim Handles - Enhanced Branding */}
-            <div 
-              className="absolute left-0 top-0 bottom-0 w-4 hover:bg-white/10 cursor-ew-resize z-50 transition-colors flex items-center justify-start group/trim-audio-l pointer-events-auto"
-              onPointerDown={(e) => e.stopPropagation()}
-            >
-              <div className="h-full w-1 bg-purple-400 group-hover/audio:bg-white transition-colors" />
-              <motion.div
-                drag="x"
-                dragMomentum={false}
-                dragElastic={0}
-                onDrag={(e, info) => handleTimelineDrag(sub.id, info.offset.x, 'trim-audio-start')}
-                onDragEnd={(e, info) => handleTimelineDragEnd(sub.id, info, 'trim-audio-start')}
-                className={`w-2 h-7 -ml-0.5 rounded-r bg-purple-400/80 flex items-center justify-center transition-all ${isTrimmingAudioStart ? 'scale-x-125 bg-amber-400 shadow-lg' : 'opacity-0 group-hover/trim-audio-l:opacity-100'}`}
-              >
-                <div className="w-[1px] h-3 bg-white/50" />
-              </motion.div>
-            </div>
-            
-            <div 
-              className="absolute right-0 top-0 bottom-0 w-4 hover:bg-white/10 cursor-ew-resize z-50 transition-colors flex items-center justify-end group/trim-audio-r pointer-events-auto"
-              onPointerDown={(e) => e.stopPropagation()}
-            >
-              <motion.div
-                drag="x"
-                dragMomentum={false}
-                dragElastic={0}
-                onDrag={(e, info) => handleTimelineDrag(sub.id, info.offset.x, 'trim-audio-end')}
-                onDragEnd={(e, info) => handleTimelineDragEnd(sub.id, info, 'trim-audio-end')}
-                className={`w-2 h-7 -mr-0.5 rounded-l bg-purple-400/80 flex items-center justify-center transition-all ${isTrimmingAudioEnd ? 'scale-x-125 bg-amber-400 shadow-lg' : 'opacity-0 group-hover/trim-audio-r:opacity-100'}`}
-              >
-                <div className="w-[1px] h-3 bg-white/50" />
-              </motion.div>
-              <div className="h-full w-1 bg-purple-400 group-hover/audio:bg-white transition-colors" />
-            </div>
-          </motion.div>
-        </div>
+        </>
       )}
     </div>
   );
-}, (prev, next) => {
-  // If this item is being dragged now or was being dragged, re-render
-  if (prev.draggingSub?.id === prev.sub.id || next.draggingSub?.id === next.sub.id) {
-    return false;
-  }
-  
-  // If the active state changed, must re-render
-  if (prev.isActive !== next.isActive) return false;
-
-  // Standard memoization for structural changes
-  const structuralCheck = 
-    prev.sub === next.sub &&
-    prev.totalDuration === next.totalDuration &&
-    prev.zoomLevel === next.zoomLevel &&
-    prev.isOverlapping === next.isOverlapping;
-
-  if (!structuralCheck) return false;
-
-  // If it's active, we need re-renders for the internal playhead
-  if (next.isActive) {
-     return prev.currentTime === next.currentTime;
-  }
-
-  // If it's inactive, we can skip the currentTime update
-  return true;
 });
 
 // Memoized Sidebar List Item for better performance
@@ -770,40 +476,88 @@ export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoUrl, setVideoUrl] = useState<string>('');
+  const [currentTime, setCurrentTime] = useState(0);
+  const [videoDuration, setVideoDuration] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isScrubbing, setIsScrubbing] = useState(false);
+  const isScrubbingRef = useRef(false);
+  const isPlayingRef = useRef(false);
+  const animationFrameRef = useRef<number | null>(null);
+  const lastFrameTimeRef = useRef<number>(0);
+  const internalPlaybackTimeRef = useRef<number>(0);
+  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+  const activeSubtitleIdRef = useRef<number | null>(null);
+
+  const [subtitles, setSubtitles] = useState<Subtitle[]>([]);
+  const [isGeneratingAll, setIsGeneratingAll] = useState(false);
   
+  // Track Selection State
+  const [selectedClipId, setSelectedClipId] = useState<{ id: number; type: 'subtitle' | 'audio' } | null>(null);
+
+  // Timeline UI State
+  const [timelineViewMode, setTimelineViewMode] = useState<'content' | 'video'>('content');
+  const [zoomLevel, setZoomLevel] = useState(60); 
+  const [timelineHeight, setTimelineHeight] = useState(() => {
+    const saved = localStorage.getItem('timeline_height');
+    return saved ? parseInt(saved, 10) : 280;
+  });
+  const [followPlayhead, setFollowPlayhead] = useState(true);
+  const [timelineScrollLeft, setTimelineScrollLeft] = useState(0);
+  const [timelineViewportWidth, setTimelineViewportWidth] = useState(0);
+  const [isResizingTimeline, setIsResizingTimeline] = useState(false);
+  const [showShortcuts, setShowShortcuts] = useState(false);
+
+  // High-performance drag refs
+  const dragInfoRef = useRef<{
+    id: number;
+    type: 'text' | 'audio' | 'trim-audio-start' | 'trim-audio-end' | 'trim-text-start' | 'trim-text-end';
+    startX: number;
+    initialTime: number;
+    initialEndTime: number;
+    initialAudioStartTime: number;
+    initialAudioTrimStart: number;
+    initialAudioTrimEnd: number;
+    initialAudioDuration: number;
+    element: HTMLElement | null;
+    isLinked: boolean;
+    rafId: number | null;
+    lastDx: number;
+  } | null>(null);
+
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
-    const onPlay = () => setIsPlaying(true);
-    const onPause = () => setIsPlaying(false);
+    const onPlay = () => {
+       setIsPlaying(true);
+       isPlayingRef.current = true;
+    };
+    const onPause = () => {
+       setIsPlaying(false);
+       isPlayingRef.current = false;
+    };
+    const onTimeUpdate = () => {
+      if (!isScrubbingRef.current) {
+        setCurrentTime(video.currentTime);
+        internalPlaybackTimeRef.current = video.currentTime;
+      }
+    };
+    const onLoadedMetadata = () => {
+      setVideoDuration(video.duration);
+    };
 
     video.addEventListener('play', onPlay);
     video.addEventListener('pause', onPause);
+    video.addEventListener('timeupdate', onTimeUpdate);
+    video.addEventListener('loadedmetadata', onLoadedMetadata);
 
     return () => {
       video.removeEventListener('play', onPlay);
       video.removeEventListener('pause', onPause);
+      video.removeEventListener('timeupdate', onTimeUpdate);
+      video.removeEventListener('loadedmetadata', onLoadedMetadata);
     };
   }, [videoUrl]);
-
-  const [subtitles, setSubtitles] = useState<Subtitle[]>([]);
-  const [isGeneratingAll, setIsGeneratingAll] = useState(false);
-  const [draggingSub, setDraggingSub] = useState<{ id: number; offset: number; type: 'text' | 'audio' | 'trim-audio-start' | 'trim-audio-end' | 'trim-text-start' | 'trim-text-end' } | null>(null);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [videoDuration, setVideoDuration] = useState(0);
-  const [isScrubbing, setIsScrubbing] = useState(false);
-  const isScrubbingRef = useRef(false);
-  const [isPlaying, setIsPlaying] = useState(false);
-  
-  const [timelineHeight, setTimelineHeight] = useState(() => {
-    const saved = localStorage.getItem('timeline_height');
-    return saved ? parseInt(saved, 10) : 224;
-  });
-  const [zoomLevel, setZoomLevel] = useState(20); // px per second
-  const [isResizingTimeline, setIsResizingTimeline] = useState(false);
-  const [followPlayhead, setFollowPlayhead] = useState(true);
-  const [showShortcuts, setShowShortcuts] = useState(false);
 
   const audioOverlaps = useMemo(() => {
     const overlaps = new Set<number>();
@@ -811,19 +565,15 @@ export default function App() {
       for (let i = 0; i < subtitles.length; i++) {
         const s1 = subtitles[i];
         if (!s1.audioUrl) continue;
-        
         const start1 = s1.audioStartTime ?? s1.startTime;
         const dur1 = Math.max(0.01, (s1.audioTrimEnd ?? s1.audioDuration ?? (s1.endTime - s1.startTime)) - (s1.audioTrimStart ?? 0));
         const end1 = start1 + dur1;
-
         for (let j = i + 1; j < subtitles.length; j++) {
           const s2 = subtitles[j];
           if (!s2.audioUrl) continue;
-
           const start2 = s2.audioStartTime ?? s2.startTime;
           const dur2 = Math.max(0.01, (s2.audioTrimEnd ?? s2.audioDuration ?? (s2.endTime - s2.startTime)) - (s2.audioTrimStart ?? 0));
           const end2 = start2 + dur2;
-
           if (start1 < end2 - 0.01 && end1 > start2 + 0.01) {
             overlaps.add(s1.id);
             overlaps.add(s2.id);
@@ -836,15 +586,104 @@ export default function App() {
 
   const maxEndTime = useMemo(() => {
     if (subtitles.length === 0) return 0;
-    // Faster max calculation
     let max = 0;
-    for (let i = 0; i < subtitles.length; i++) {
-      if (subtitles[i].endTime > max) max = subtitles[i].endTime;
+    for (const s of subtitles) {
+      if (s.endTime > max) max = s.endTime;
+      if (s.audioUrl) {
+        const start = s.isLinked ? s.startTime : (s.audioStartTime ?? s.startTime);
+        const dur = (s.audioTrimEnd ?? s.audioDuration ?? (s.endTime - s.startTime)) - (s.audioTrimStart ?? 0);
+        if (start + dur > max) max = start + dur;
+      }
     }
     return max;
   }, [subtitles]);
 
-  const totalDuration = Math.max(videoDuration, maxEndTime) || 1;
+  const totalDuration = useMemo(() => {
+    if (timelineViewMode === 'video') return Math.max(0.1, videoDuration);
+    return Math.max(0.1, maxEndTime || videoDuration);
+  }, [timelineViewMode, videoDuration, maxEndTime]);
+
+  const visibleSubtitles = useMemo(() => {
+    const viewportStartTime = timelineScrollLeft / zoomLevel;
+    const viewportEndTime = (timelineScrollLeft + timelineViewportWidth) / zoomLevel;
+    const padding = 2;
+    return subtitles.filter(s => {
+      const subStart = s.startTime;
+      const subEnd = s.endTime;
+      const audioStart = s.isLinked ? s.startTime : (s.audioStartTime ?? s.startTime);
+      const audioDuration = s.audioDuration || (s.endTime - s.startTime);
+      const audioEnd = audioStart + ((s.audioTrimEnd ?? audioDuration) - (s.audioTrimStart ?? 0));
+      const contentStart = Math.min(subStart, audioStart);
+      const contentEnd = Math.max(subEnd, audioEnd);
+      return (contentStart <= viewportEndTime + padding) && (contentEnd >= viewportStartTime - padding);
+    });
+  }, [subtitles, timelineScrollLeft, timelineViewportWidth, zoomLevel]);
+
+  const handleTimelineScrub = (time: number) => {
+    let currentTotal = totalDuration;
+    const clampedTime = Math.max(0, Math.min(time, currentTotal));
+    
+    if (Number.isFinite(clampedTime)) {
+      const video = videoRef.current;
+      if (video && videoUrl) {
+        video.currentTime = clampedTime;
+      }
+      internalPlaybackTimeRef.current = clampedTime;
+      setCurrentTime(clampedTime);
+    }
+    
+    if (activeSubtitleIdRef.current !== null && currentAudioRef.current) {
+        let sub = subtitles.find(s => s.id === activeSubtitleIdRef.current);
+        if (sub && clampedTime >= sub.startTime && clampedTime <= sub.endTime) {
+           const offset = sub.isLinked ? sub.startTime : (sub.audioStartTime ?? sub.startTime);
+           const audioStartInFile = sub.audioTrimStart ?? 0;
+           const audioDur = sub.audioDuration || (sub.endTime - sub.startTime);
+           const trimEnd = sub.audioTrimEnd ?? audioDur;
+           
+           const expectedAudioTime = (clampedTime - offset) + audioStartInFile;
+           const safeAudioTime = Math.max(audioStartInFile, Math.min(trimEnd, expectedAudioTime));
+           
+           if (Math.abs(currentAudioRef.current.currentTime - safeAudioTime) > 0.01) {
+               currentAudioRef.current.currentTime = safeAudioTime;
+           }
+           
+           if (expectedAudioTime > trimEnd + 0.02) {
+             currentAudioRef.current.pause();
+           }
+           return;
+        }
+    }
+
+    const newActiveSub = subtitles.find(s => {
+      if (!s.audioUrl) return false;
+      const start = s.isLinked ? s.startTime : (s.audioStartTime ?? s.startTime);
+      const audioDur = s.audioDuration || (s.endTime - s.startTime);
+      const effectiveDuration = (s.audioTrimEnd ?? audioDur) - (s.audioTrimStart ?? 0);
+      return clampedTime >= start && clampedTime <= (start + effectiveDuration);
+    });
+
+    if (newActiveSub) {
+      const audioStart = newActiveSub.isLinked ? newActiveSub.startTime : (newActiveSub.audioStartTime ?? newActiveSub.startTime);
+      const audioTrimStart = newActiveSub.audioTrimStart ?? 0;
+      const audioTime = (clampedTime - audioStart) + audioTrimStart;
+      
+      if (currentAudioRef.current) {
+        currentAudioRef.current.pause();
+      }
+      
+      const audio = new Audio(newActiveSub.audioUrl!);
+      audio.currentTime = audioTime;
+      audio.playbackRate = videoRef.current ? videoRef.current.playbackRate : 1;
+      currentAudioRef.current = audio;
+      activeSubtitleIdRef.current = newActiveSub.id;
+    } else {
+      if (currentAudioRef.current) {
+        currentAudioRef.current.pause();
+        currentAudioRef.current = null;
+      }
+      activeSubtitleIdRef.current = null;
+    }
+  };
 
   useEffect(() => {
     if (isResizingTimeline) {
@@ -868,20 +707,57 @@ export default function App() {
     }
   }, [isResizingTimeline, timelineHeight]);
 
-  const togglePlayback = useCallback(() => {
-    if (!videoRef.current) return;
-    if (videoRef.current.paused) {
-      videoRef.current.play().catch(console.error);
-    } else {
+  const stopTimeline = useCallback(() => {
+    setIsPlaying(false);
+    isPlayingRef.current = false;
+    
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+    
+    if (videoRef.current) {
       videoRef.current.pause();
     }
+    
+    if (currentAudioRef.current) {
+      currentAudioRef.current.pause();
+      currentAudioRef.current = null;
+    }
+    activeSubtitleIdRef.current = null;
   }, []);
 
+  const playTimeline = useCallback(() => {
+    // Prevent multiple concurrent loops
+    if (isPlayingRef.current) return;
+    
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+    }
+
+    setIsPlaying(true);
+    isPlayingRef.current = true;
+    lastFrameTimeRef.current = performance.now();
+    internalPlaybackTimeRef.current = currentTime;
+    
+    if (videoRef.current && videoUrl) {
+      videoRef.current.play().catch(console.error);
+    }
+  }, [videoUrl, currentTime]);
+
+  const togglePlayback = useCallback(() => {
+    if (isPlayingRef.current) {
+      stopTimeline();
+    } else {
+      playTimeline();
+    }
+  }, [playTimeline, stopTimeline]);
+
   // Refs for keydown listener to avoid frequent re-subscribing
-  const stateRef = useRef({ togglePlayback, subtitles, currentTime, videoRef });
+  const stateRef = useRef({ togglePlayback, handleTimelineScrub, subtitles, currentTime, videoRef, isPlaying });
   useEffect(() => {
-    stateRef.current = { togglePlayback, subtitles, currentTime, videoRef };
-  }, [togglePlayback, subtitles, currentTime, videoRef]);
+    stateRef.current = { togglePlayback, handleTimelineScrub, subtitles, currentTime, videoRef, isPlaying };
+  }, [togglePlayback, handleTimelineScrub, subtitles, currentTime, videoRef, isPlaying]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -891,34 +767,30 @@ export default function App() {
         return;
       }
       
-      const { togglePlayback, subtitles, currentTime, videoRef } = stateRef.current;
+      const { togglePlayback, handleTimelineScrub, subtitles, currentTime } = stateRef.current;
 
       if (e.code === 'Space') {
         e.preventDefault();
         togglePlayback();
       } else if (e.code === 'ArrowLeft') {
-        if (videoRef.current) {
-          e.preventDefault();
-          videoRef.current.currentTime = Math.max(0, videoRef.current.currentTime - (e.shiftKey ? 1 : 0.1));
-        }
+        e.preventDefault();
+        handleTimelineScrub(currentTime - (e.shiftKey ? 1 : 0.1));
       } else if (e.code === 'ArrowRight') {
-        if (videoRef.current) {
-          e.preventDefault();
-          videoRef.current.currentTime = Math.min(videoRef.current.duration || 0, videoRef.current.currentTime + (e.shiftKey ? 1 : 0.1));
-        }
+        e.preventDefault();
+        handleTimelineScrub(currentTime + (e.shiftKey ? 1 : 0.1));
       } else if (e.code === 'ArrowUp') {
         e.preventDefault();
         // Jump to previous subtitle
         const prevSub = [...subtitles].reverse().find(s => s.startTime < currentTime - 0.1);
-        if (prevSub && videoRef.current) {
-          videoRef.current.currentTime = prevSub.startTime;
+        if (prevSub) {
+          handleTimelineScrub(prevSub.startTime);
         }
       } else if (e.code === 'ArrowDown') {
         e.preventDefault();
         // Jump to next subtitle
         const nextSub = subtitles.find(s => s.startTime > currentTime + 0.1);
-        if (nextSub && videoRef.current) {
-          videoRef.current.currentTime = nextSub.startTime;
+        if (nextSub) {
+          handleTimelineScrub(nextSub.startTime);
         }
       } else if (e.code === 'Delete' || e.code === 'Backspace') {
         // Only delete if something is active and we're not typing
@@ -1106,77 +978,10 @@ export default function App() {
       }
     }
     ctx.stroke();
-  }, [totalDuration, videoDuration, zoomLevel, draggingSub === null]); // Redraw on size/duration/zoom changes
+  }, [totalDuration, videoDuration, zoomLevel]); // Only redraw on dimension/scale changes, NOT on state/time changes
 
   const timelineRuler = <canvas ref={timelineRulerCanvasRef} className="absolute inset-0 w-full h-full pointer-events-none" />;
 
-  const handleTimelineScrub = (time: number) => {
-    if (!videoRef.current) return;
-    
-    let currentTotal = Math.max(videoDuration, maxEndTime) || 1;
-    if (!Number.isFinite(currentTotal)) currentTotal = 1;
-    const clampedTime = Math.max(0, Math.min(time, currentTotal));
-    
-    if (Number.isFinite(clampedTime) && Math.abs(videoRef.current.currentTime - clampedTime) > 0.001) {
-      videoRef.current.currentTime = clampedTime;
-      setCurrentTime(clampedTime);
-    }
-    
-    if (activeSubtitleIdRef.current !== null && currentAudioRef.current) {
-        let sub = subtitles.find(s => s.id === activeSubtitleIdRef.current);
-        if (sub && clampedTime >= sub.startTime && clampedTime <= sub.endTime) {
-           const offset = sub.isLinked ? sub.startTime : (sub.audioStartTime ?? sub.startTime);
-           const audioStartInFile = sub.audioTrimStart ?? 0;
-           const audioDur = sub.audioDuration || (sub.endTime - sub.startTime);
-           const trimEnd = sub.audioTrimEnd ?? audioDur;
-           
-           const expectedAudioTime = (clampedTime - offset) + audioStartInFile;
-           const safeAudioTime = Math.max(audioStartInFile, Math.min(trimEnd, expectedAudioTime));
-           
-           if (Math.abs(currentAudioRef.current.currentTime - safeAudioTime) > 0.01) {
-               currentAudioRef.current.currentTime = safeAudioTime;
-           }
-           
-           if (expectedAudioTime > trimEnd + 0.02) {
-             currentAudioRef.current.pause();
-           }
-           return;
-        }
-    }
-
-    const newActiveSub = subtitles.find(s => {
-      if (!s.audioUrl) return false;
-      const start = s.isLinked ? s.startTime : (s.audioStartTime ?? s.startTime);
-      const audioDur = s.audioDuration || (s.endTime - s.startTime);
-      const effectiveDuration = (s.audioTrimEnd ?? audioDur) - (s.audioTrimStart ?? 0);
-      return clampedTime >= start && clampedTime <= (start + effectiveDuration);
-    });
-
-    if (newActiveSub) {
-      const audioStart = newActiveSub.isLinked ? newActiveSub.startTime : (newActiveSub.audioStartTime ?? newActiveSub.startTime);
-      const audioTrimStart = newActiveSub.audioTrimStart ?? 0;
-      const audioTime = (clampedTime - audioStart) + audioTrimStart;
-      
-      if (currentAudioRef.current) {
-        currentAudioRef.current.pause();
-      }
-      
-      const audio = new Audio(newActiveSub.audioUrl!);
-      audio.currentTime = audioTime;
-      audio.playbackRate = videoRef.current.playbackRate;
-      currentAudioRef.current = audio;
-      activeSubtitleIdRef.current = newActiveSub.id;
-    } else {
-      if (currentAudioRef.current) {
-        currentAudioRef.current.pause();
-        currentAudioRef.current = null;
-      }
-      activeSubtitleIdRef.current = null;
-    }
-  };
-
-  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
-  const activeSubtitleIdRef = useRef<number | null>(null);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const timelineContainerRef = useRef<HTMLDivElement>(null);
   const [previewingId, setPreviewingId] = useState<number | null>(null);
@@ -1309,6 +1114,7 @@ export default function App() {
         const text = event.target?.result as string;
         const parsed = parseSRT(text);
         updateSubtitles(parsed);
+        setTimelineViewMode('content');
         setErrorMsg(null);
       };
       reader.readAsText(file);
@@ -1574,98 +1380,143 @@ export default function App() {
     updateSubtitles((prev) => prev.map((s) => (s.id === id ? { ...s, voice, audioUrl: undefined, waveform: undefined } : s)));
   };
 
-  const handleTimelineDrag = useCallback((subId: number, deltaX: number, type: 'text' | 'audio' | 'trim-audio-start' | 'trim-audio-end' | 'trim-text-start' | 'trim-text-end') => {
-    if (!Number.isFinite(deltaX)) return;
-    setDraggingSub({ id: subId, offset: deltaX, type });
-  }, []);
-
-  const handleTimelineDragEnd = useCallback((subId: number, info: any, type: 'text' | 'audio' | 'trim-audio-start' | 'trim-audio-end' | 'trim-text-start' | 'trim-text-end') => {
-    const deltaX = info.offset.x || 0;
-    setDraggingSub(null);
-    const deltaTime = zoomLevel > 0 ? deltaX / zoomLevel : 0;
+  const handleDragPointerDown = useCallback((
+    e: React.PointerEvent, 
+    subId: number, 
+    type: 'text' | 'audio' | 'trim-audio-start' | 'trim-audio-end' | 'trim-text-start' | 'trim-text-end'
+  ) => {
+    const sub = subtitles.find(s => s.id === subId);
+    if (!sub) return;
     
-    if (isNaN(deltaTime) || Math.abs(deltaTime) < 0.001 && !type.startsWith('trim')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    
+    const target = e.currentTarget as HTMLElement;
+    target.setPointerCapture(e.pointerId);
+    
+    dragInfoRef.current = {
+      id: subId,
+      type,
+      startX: e.clientX,
+      initialTime: sub.startTime,
+      initialEndTime: sub.endTime,
+      initialAudioStartTime: sub.audioStartTime ?? sub.startTime,
+      initialAudioTrimStart: sub.audioTrimStart ?? 0,
+      initialAudioTrimEnd: sub.audioTrimEnd ?? sub.audioDuration ?? (sub.endTime - sub.startTime),
+      initialAudioDuration: sub.audioDuration ?? (sub.endTime - sub.startTime),
+      element: target,
+      isLinked: sub.isLinked ?? true,
+      rafId: null,
+      lastDx: 0
+    };
+  }, [subtitles]);
 
-    updateSubtitles(prev => prev.map(s => {
-      if (s.id === subId) {
-        const duration = s.endTime - s.startTime;
-        const isLinked = s.isLinked ?? true;
-        
-        if (type === 'text') {
-          const duration = Math.max(0.1, s.endTime - s.startTime);
-          const newStart = Math.max(0, s.startTime + deltaTime);
-          if (!Number.isFinite(newStart)) return s;
-          return {
-            ...s,
-            startTime: newStart,
-            endTime: newStart + duration,
-            audioStartTime: isLinked ? newStart : (s.audioStartTime ?? s.startTime)
-          };
-        } else if (type === 'audio') {
-          const currentAudioStart = s.audioStartTime ?? s.startTime;
-          const newAudioStart = Math.max(0, currentAudioStart + deltaTime);
-          if (!Number.isFinite(newAudioStart)) return s;
-          const currentTextStart = s.startTime;
-          const audioDur = Math.max(0.1, (s.audioTrimEnd ?? s.audioDuration ?? (s.endTime - s.startTime)) - (s.audioTrimStart ?? 0));
-          return {
-            ...s,
-            startTime: isLinked ? newAudioStart : currentTextStart,
-            endTime: isLinked ? newAudioStart + audioDur : s.endTime,
-            audioStartTime: newAudioStart
-          };
-        } else if (type === 'trim-audio-start') {
-          const currentTrimStart = s.audioTrimStart ?? 0;
-          const audioDuration = s.audioDuration || (s.endTime - s.startTime);
-          const currentTrimEnd = s.audioTrimEnd ?? audioDuration;
-          const currentAudioStart = s.audioStartTime ?? s.startTime;
-          
-          const newTrimStart = Math.max(0, Math.min(currentTrimEnd - 0.1, currentTrimStart + deltaTime));
-          if (!Number.isFinite(newTrimStart)) return s;
-          const actualDelta = newTrimStart - currentTrimStart;
-          const newAudioStart = currentAudioStart + actualDelta;
-          const isLinked = s.isLinked ?? true;
+  const handleDragPointerMove = useCallback((e: React.PointerEvent) => {
+    const drag = dragInfoRef.current;
+    if (!drag || !drag.element) return;
+    
+    // Prevent default scrolling during drag
+    e.preventDefault();
 
-          return {
-            ...s,
-            audioTrimStart: newTrimStart,
-            audioStartTime: newAudioStart,
-            startTime: isLinked ? newAudioStart : s.startTime,
-            endTime: isLinked ? (newAudioStart + Math.max(0.1, currentTrimEnd - newTrimStart)) : s.endTime
-          };
-        } else if (type === 'trim-audio-end') {
-          const audioDuration = s.audioDuration || Math.max(0.1, s.endTime - s.startTime);
-          const currentTrimStart = s.audioTrimStart ?? 0;
-          const currentTrimEnd = s.audioTrimEnd ?? audioDuration;
-          const newTrimEnd = Math.max(currentTrimStart + 0.1, Math.min(audioDuration, currentTrimEnd + deltaTime));
-          if (!Number.isFinite(newTrimEnd)) return s;
-          const isLinked = s.isLinked ?? true;
-          const currentAudioStart = s.audioStartTime ?? s.startTime;
+    const dx = e.clientX - drag.startX;
+    if (Math.abs(dx - drag.lastDx) < 0.2) return; 
+    drag.lastDx = dx;
+    
+    if (drag.rafId === null) {
+      drag.rafId = requestAnimationFrame(() => {
+        if (!dragInfoRef.current || !drag.element) return;
+        const currentDrag = dragInfoRef.current;
+        const currentDx = currentDrag.lastDx;
+        const currentTimeDiff = currentDx / zoomLevel;
 
-          return {
-            ...s,
-            audioTrimEnd: newTrimEnd,
-            endTime: isLinked ? (currentAudioStart + Math.max(0.1, newTrimEnd - currentTrimStart)) : s.endTime
-          };
-        } else if (type === 'trim-text-start') {
-          const newStart = Math.max(0, Math.min(s.endTime - 0.1, s.startTime + deltaTime));
-          if (!Number.isFinite(newStart)) return s;
-          const isLinked = s.isLinked ?? true;
-          return {
-            ...s,
-            startTime: newStart,
-            audioStartTime: isLinked ? newStart : s.audioStartTime
-          };
-        } else if (type === 'trim-text-end') {
-          const newEnd = Math.max(s.startTime + 0.1, s.endTime + deltaTime);
-          if (!Number.isFinite(newEnd)) return s;
-          return {
-            ...s,
-            endTime: newEnd,
-          };
+        // Snapping Logic
+        const snapThreshold = 10 / zoomLevel; // 10px snapping
+        let finalDx = currentDx;
+
+        const findSnap = (targetTime: number) => {
+          // Snap to playhead
+          if (Math.abs(targetTime - currentTime) < snapThreshold) {
+            return (currentTime - (targetTime - currentTimeDiff)) * zoomLevel;
+          }
+          // Snap to other clip edges
+          for (const s of subtitles) {
+            if (s.id === currentDrag.id) continue;
+            if (Math.abs(targetTime - s.startTime) < snapThreshold) return (s.startTime - (targetTime - currentTimeDiff)) * zoomLevel;
+            if (Math.abs(targetTime - s.endTime) < snapThreshold) return (s.endTime - (targetTime - currentTimeDiff)) * zoomLevel;
+          }
+          return currentDx;
+        };
+
+        if (currentDrag.type === 'text') {
+          finalDx = findSnap(currentDrag.initialTime + currentTimeDiff);
+        } else if (currentDrag.type === 'audio') {
+          finalDx = findSnap(currentDrag.initialAudioStartTime + currentTimeDiff);
         }
-      }
-      return s;
-    }), false);
+
+        drag.element.style.transform = `translateX(${finalDx}px)`;
+        drag.rafId = null;
+      });
+    }
+  }, [zoomLevel, currentTime, subtitles]);
+
+  const handleDragPointerUp = useCallback((e: React.PointerEvent) => {
+    const drag = dragInfoRef.current;
+    if (!drag) return;
+    
+    if (drag.rafId) {
+      cancelAnimationFrame(drag.rafId);
+    }
+    
+    const target = e.currentTarget as HTMLElement;
+    target.releasePointerCapture(e.pointerId);
+    
+    const dx = e.clientX - drag.startX;
+    const deltaTime = zoomLevel > 0 ? dx / zoomLevel : 0;
+    
+    if (Math.abs(deltaTime) > 0.001 || drag.type.startsWith('trim')) {
+      updateSubtitles((prev) => prev.map(s => {
+          if (s.id !== drag.id) return s;
+          
+          const isLinked = drag.isLinked;
+          let nextSub = { ...s };
+          
+          if (drag.type === 'text') {
+              const duration = drag.initialEndTime - drag.initialTime;
+              nextSub.startTime = Math.max(0, drag.initialTime + deltaTime);
+              nextSub.endTime = nextSub.startTime + duration;
+              if (isLinked) {
+                  nextSub.audioStartTime = nextSub.startTime;
+              }
+          } else if (drag.type === 'audio') {
+              nextSub.audioStartTime = Math.max(0, drag.initialAudioStartTime + deltaTime);
+              if (isLinked) {
+                  const duration = drag.initialEndTime - drag.initialTime;
+                  nextSub.startTime = nextSub.audioStartTime;
+                  nextSub.endTime = nextSub.startTime + duration;
+              }
+          } else if (drag.type === 'trim-text-start') {
+              nextSub.startTime = Math.max(0, Math.min(drag.initialEndTime - 0.1, drag.initialTime + deltaTime));
+              if (isLinked) nextSub.audioStartTime = nextSub.startTime;
+          } else if (drag.type === 'trim-text-end') {
+              nextSub.endTime = Math.max(drag.initialTime + 0.1, drag.initialEndTime + deltaTime);
+          } else if (drag.type === 'trim-audio-start') {
+              nextSub.audioTrimStart = Math.max(0, Math.min(drag.initialAudioTrimEnd - 0.1, drag.initialAudioTrimStart + deltaTime));
+              const actualDelta = nextSub.audioTrimStart - drag.initialAudioTrimStart;
+              nextSub.audioStartTime = drag.initialAudioStartTime + actualDelta;
+              if (isLinked) nextSub.startTime = nextSub.audioStartTime;
+          } else if (drag.type === 'trim-audio-end') {
+              nextSub.audioTrimEnd = Math.max(drag.initialAudioTrimStart + 0.1, Math.min(drag.initialAudioDuration, drag.initialAudioTrimEnd + deltaTime));
+              if (isLinked) nextSub.endTime = nextSub.audioStartTime + (nextSub.audioTrimEnd - nextSub.audioTrimStart);
+          }
+          
+          return nextSub;
+      }));
+    }
+    
+    if (drag.element) {
+      drag.element.style.transform = '';
+    }
+    dragInfoRef.current = null;
   }, [zoomLevel, updateSubtitles]);
 
   const handleToggleLink = (id: number) => {
@@ -1858,32 +1709,65 @@ export default function App() {
     }
   };
 
-  // Synchronize audio playback with video
+  // Synchronize audio playback with transport
   useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-
-    let syncFrame: number;
+    (window as any)._lastVideoStateUpdate = 0;
 
     const loop = () => {
-      if (!videoRef.current) return;
+      // 1. Bail immediately if dragging - prevents state updates and heavy sync logic
+      if (dragInfoRef.current !== null) {
+        animationFrameRef.current = requestAnimationFrame(loop);
+        return;
+      }
+
       const video = videoRef.current;
-      const time = video.currentTime;
+      const hasVideo = !!(video && videoUrl);
+      const now = performance.now();
+      
+      let time: number;
+      let isPaused: boolean;
+      let playbackRate: number = 1;
+
+      if (hasVideo && video) {
+        time = video.currentTime;
+        isPaused = video.paused;
+        playbackRate = video.playbackRate;
+        
+        // Keep sync between video paused state and our transport state
+        if (isPlayingRef.current && isPaused) {
+           setIsPlaying(false);
+           isPlayingRef.current = false;
+        } else if (!isPlayingRef.current && !isPaused) {
+           setIsPlaying(true);
+           isPlayingRef.current = true;
+        }
+      } else {
+        // Internal clock
+        if (isPlayingRef.current) {
+          const delta = (now - lastFrameTimeRef.current) / 1000;
+          internalPlaybackTimeRef.current = Math.min(totalDuration, internalPlaybackTimeRef.current + delta);
+          time = internalPlaybackTimeRef.current;
+        } else {
+          time = currentTime;
+        }
+        isPaused = !isPlayingRef.current;
+      }
+      lastFrameTimeRef.current = now;
       
       // Update state selectively to reduce re-renders. 
       // Throttle to ~33fps (every 30ms) to maintain smooth UI while reducing render load
-      const now = performance.now();
       if (Number.isFinite(time) && (now - (window as any)._lastVideoStateUpdate > 30)) {
         setCurrentTime(time);
         (window as any)._lastVideoStateUpdate = now;
+        
+        // Loop completion check
+        if (isPlayingRef.current && time >= totalDuration - 0.01) {
+          stopTimeline();
+        }
       }
 
       // Cache subtitles length
       const subsCount = subtitles.length;
-      if (subsCount === 0) {
-        syncFrame = requestAnimationFrame(loop);
-        return;
-      }
       
       // Find active audio (for playback) - more efficient loop
       let activeAudio: Subtitle | undefined;
@@ -1912,8 +1796,8 @@ export default function App() {
             const audioStartInFile = activeAudio.audioTrimStart ?? 0;
             audio.currentTime = (time - start) + audioStartInFile; // sync offset with trim
             // Match playback rate
-            audio.playbackRate = video.playbackRate;
-            if (!video.paused) {
+            audio.playbackRate = playbackRate;
+            if (!isPaused) {
               audio.play().catch(console.error);
             }
             currentAudioRef.current = audio;
@@ -1925,15 +1809,15 @@ export default function App() {
           // Currently in the same audio window
           if (currentAudioRef.current) {
             // Keep playback state synced
-            if (video.paused && !currentAudioRef.current.paused) {
+            if (isPaused && !currentAudioRef.current.paused) {
               currentAudioRef.current.pause();
-            } else if (!video.paused && currentAudioRef.current.paused) {
+            } else if (!isPaused && currentAudioRef.current.paused) {
               currentAudioRef.current.play().catch(console.error);
             }
             
             // Keep playback rate synced
-            if (currentAudioRef.current.playbackRate !== video.playbackRate) {
-              currentAudioRef.current.playbackRate = video.playbackRate;
+            if (currentAudioRef.current.playbackRate !== playbackRate) {
+              currentAudioRef.current.playbackRate = playbackRate;
             }
 
             // Sophisticated drift correction logic
@@ -1946,14 +1830,11 @@ export default function App() {
             const expectedTimeInFile = (time - start) + audioStartInFile;
             
             // Adaptive threshold based on interaction state
-            // During scrubbing or seeking, we want sub-frame precision (1ms)
-            // During normal playback, we allow a small buffer (80ms) to prevent audible "studdering" 
-            // from constant currentTime seeks which can click.
-            const isSeekingOrScrubbing = isScrubbingRef.current || video.seeking;
+            const isSeekingOrScrubbing = isScrubbingRef.current || (hasVideo && video && video.seeking);
             const sensitivity = isSeekingOrScrubbing ? 0.005 : 0.08;
             
             // Also tighten threshold if speed is modified
-            const adjustedSensitivity = Math.abs(video.playbackRate - 1) > 0.1 ? Math.min(sensitivity, 0.04) : sensitivity;
+            const adjustedSensitivity = Math.abs(playbackRate - 1) > 0.1 ? Math.min(sensitivity, 0.04) : sensitivity;
             
             const actualTime = currentAudioRef.current.currentTime;
             const drift = Math.abs(actualTime - expectedTimeInFile);
@@ -1981,48 +1862,61 @@ export default function App() {
         }
       }
 
-      if (timelineContainerRef.current && !video.paused && !isScrubbingRef.current && followPlayhead) {
+      if (timelineContainerRef.current && !isPaused && !isScrubbingRef.current && followPlayhead) {
         const container = timelineContainerRef.current;
-        // playheadX is pixels per second
         const playheadX = time * zoomLevel;
         const containerWidth = container.offsetWidth;
-        const scrollLeft = container.scrollLeft;
         
-        // Follow playhead with a smooth window: keep playhead between 20% and 80% of view
-        const padding = containerWidth * 0.2;
-        if (playheadX > scrollLeft + containerWidth - padding) {
-          container.scrollLeft = playheadX - (containerWidth * 0.2);
-        } else if (playheadX < scrollLeft + padding) {
-          container.scrollLeft = Math.max(0, playheadX - (containerWidth * 0.8));
-        }
+        // CapCut-style: Keep playhead centered during playback
+        // We only adjust scroll if the playhead moves beyond the center point
+        container.scrollLeft = playheadX - (containerWidth / 2);
       }
 
-      syncFrame = requestAnimationFrame(loop);
+      animationFrameRef.current = requestAnimationFrame(loop);
     };
 
     const onSeeked = () => {
+      if (!videoRef.current) return;
       // Force resync after seeking
       if (currentAudioRef.current && activeSubtitleIdRef.current !== null) {
         const sub = subtitles.find((s) => s.id === activeSubtitleIdRef.current);
         if (sub) {
           const start = sub.isLinked ? sub.startTime : (sub.audioStartTime ?? sub.startTime);
-          currentAudioRef.current.currentTime = (video.currentTime - start) + (sub.audioTrimStart ?? 0);
+          currentAudioRef.current.currentTime = (videoRef.current.currentTime - start) + (sub.audioTrimStart ?? 0);
         }
       }
     };
 
-    video.addEventListener('seeked', onSeeked);
-    syncFrame = requestAnimationFrame(loop);
+    if (videoRef.current) {
+      videoRef.current.addEventListener('seeked', onSeeked);
+    }
+    animationFrameRef.current = requestAnimationFrame(loop);
 
     return () => {
-      cancelAnimationFrame(syncFrame);
-      video.removeEventListener('seeked', onSeeked);
+      if (videoRef.current) {
+        videoRef.current.removeEventListener('seeked', onSeeked);
+      }
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
       if (currentAudioRef.current) {
          currentAudioRef.current.pause();
          currentAudioRef.current = null;
       }
     };
-  }, [subtitles]);
+  }, [subtitles, videoUrl, totalDuration, zoomLevel, followPlayhead, stopTimeline]);
+
+
+  useEffect(() => {
+    if (!timelineContainerRef.current) return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setTimelineViewportWidth(entry.contentRect.width);
+      }
+    });
+    observer.observe(timelineContainerRef.current);
+    return () => observer.disconnect();
+  }, [timelineViewportWidth]);
 
   // Clean up object URLs
   useEffect(() => {
@@ -2032,7 +1926,7 @@ export default function App() {
         if (s.audioUrl) URL.revokeObjectURL(s.audioUrl);
       });
     };
-  }, []);
+  }, [videoUrl, subtitles]);
 
   return (
     <div className="w-full h-screen bg-[#020617] text-slate-200 font-sans overflow-hidden flex flex-col">
@@ -2388,7 +2282,7 @@ export default function App() {
                      <button 
                        onClick={() => {
                          const containerWidth = timelineContainerRef.current?.offsetWidth || 800;
-                         const duration = Math.max(videoDuration, maxEndTime) || 1;
+                         const duration = totalDuration;
                          setZoomLevel(Math.max(2, (containerWidth - 40) / duration));
                        }}
                        className="p-1 px-1.5 hover:text-white transition-colors text-[9px] font-bold border-l border-slate-800"
@@ -2397,16 +2291,39 @@ export default function App() {
                         FIT
                      </button>
                      <span className="text-[9px] text-slate-500 font-mono ml-1 w-6 text-center">{Math.round(zoomLevel / 20 * 100)}%</span>
+                      
+                      {/* View Mode Toggle */}
+                      <div className="flex items-center gap-1 border-l border-slate-800 ml-1 pl-1">
+                         <button 
+                           onClick={() => setTimelineViewMode('content')}
+                           className={`px-1.5 py-0.5 rounded text-[9px] font-bold transition-colors ${timelineViewMode === 'content' ? 'bg-amber-500 text-slate-950' : 'text-slate-400 hover:text-white'}`}
+                           title="Show only content duration"
+                         >
+                           CONTENT
+                         </button>
+                         <button 
+                           onClick={() => setTimelineViewMode('video')}
+                           className={`px-1.5 py-0.5 rounded text-[9px] font-bold transition-colors ${timelineViewMode === 'video' ? 'bg-amber-500 text-slate-950' : 'text-slate-400 hover:text-white'}`}
+                           title="Show full video duration"
+                         >
+                           VIDEO
+                         </button>
+                      </div>
                    </div>
                  </div>
                  <span className="font-mono text-[10px] bg-slate-900 border border-slate-800 px-1.5 py-0.5 rounded text-slate-500">
-                   {formatTime(currentTime)} / {formatTime(Math.max(videoDuration, subtitles.length > 0 ? Math.max(...subtitles.map(s => s.endTime)) : 0))}
+                   {formatTime(currentTime)} / {formatTime(totalDuration)}
                  </span>
               </h3>
               
               <div 
                 ref={timelineContainerRef}
-                className="flex-1 relative bg-slate-900 rounded border border-slate-800 overflow-x-auto overflow-y-hidden select-none custom-scrollbar pb-2"
+                className="flex-1 relative bg-slate-900 border-t border-slate-800 overflow-x-auto overflow-y-auto select-none custom-scrollbar pb-10"
+                onScroll={(e) => {
+                  const target = e.currentTarget;
+                  setTimelineScrollLeft(target.scrollLeft);
+                  setTimelineViewportWidth(target.offsetWidth);
+                }}
                 onWheel={(e) => {
                   if (e.altKey || e.ctrlKey || e.metaKey) {
                     e.preventDefault();
@@ -2417,7 +2334,6 @@ export default function App() {
                     const container = timelineContainerRef.current;
                     if (!container) return;
                     
-                    // Time position under the mouse
                     const rect = container.getBoundingClientRect();
                     const mouseXInContainer = e.clientX - rect.left + container.scrollLeft;
                     const timeAtMouse = mouseXInContainer / zoomLevel;
@@ -2426,118 +2342,165 @@ export default function App() {
                     
                     if (newZoom !== zoomLevel) {
                       setZoomLevel(newZoom);
-                      
-                      // After state update, we need to adjust scroll
-                      // Since setZoomLevel is async, we'll use a trick or just wait for the next render
-                      // Better approach: Calculate the new scroll left immediately
                       const newScrollLeft = timeAtMouse * newZoom - (e.clientX - rect.left);
-                      
-                      // Use requestAnimationFrame to ensure the DOM has updated with new zoom-related widths
                       requestAnimationFrame(() => {
-                        if (container) {
-                          container.scrollLeft = newScrollLeft;
-                        }
+                        if (container) container.scrollLeft = newScrollLeft;
                       });
                     }
                   }
                 }}
               >
                 <div 
-                   className="h-full relative min-w-full cursor-pointer"
-                   style={{ width: `${Math.max(100, Math.max(videoDuration, subtitles.length > 0 ? Math.max(...subtitles.map(s => s.endTime)) : 0) * zoomLevel)}px` }} // Dynamic scaling
+                   className="relative min-w-full cursor-pointer"
+                   style={{ 
+                     width: `${totalDuration * zoomLevel}px`,
+                     height: '100%' 
+                   }}
                    onPointerDown={(e) => {
+                     // Only scrub if clicking empty space or playhead area
+                     if ((e.target as HTMLElement).closest('.timeline-clip')) return;
+
                      setIsScrubbing(true);
                      isScrubbingRef.current = true;
                      e.currentTarget.setPointerCapture(e.pointerId);
-                     if (videoRef.current) {
-                       if (!videoRef.current.paused) {
-                          videoRef.current.pause();
-                          e.currentTarget.dataset.wasPlaying = 'true';
-                       }
-                       const rect = e.currentTarget.getBoundingClientRect();
-                       const clickX = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
-                       const percentage = clickX / rect.width;
-                       const currentTotal = Math.max(videoDuration, maxEndTime) || 1;
-                       handleTimelineScrub(percentage * currentTotal);
+                     
+                     const hasVideo = !!(videoRef.current && videoUrl);
+                     if (hasVideo && videoRef.current) {
+                        if (!videoRef.current.paused) {
+                           videoRef.current.pause();
+                           e.currentTarget.dataset.wasPlaying = 'true';
+                        }
+                     } else if (isPlaying) {
+                        setIsPlaying(false);
+                        e.currentTarget.dataset.wasPlaying = 'true';
                      }
+
+                     const rect = e.currentTarget.getBoundingClientRect();
+                     const clickX = e.clientX - rect.left;
+                     handleTimelineScrub(clickX / zoomLevel);
                    }}
                  onPointerMove={(e) => {
-                   if (isScrubbingRef.current && videoRef.current) {
+                   if (isScrubbingRef.current) {
                      const rect = e.currentTarget.getBoundingClientRect();
-                     const clickX = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
-                     const percentage = clickX / rect.width;
-                     let totalD = Math.max(videoDuration, subtitles.length > 0 ? Math.max(...subtitles.map(s => isNaN(s.endTime) ? 0 : s.endTime)) : 0) || 1;
-                     if (isNaN(totalD)) totalD = 1;
-                     const newTime = Math.max(0, Math.min(percentage * totalD, totalD));
-                     videoRef.current.currentTime = newTime;
-                     
-                     // Force immediate audio scrub
-                     if (currentAudioRef.current && activeSubtitleIdRef.current !== null) {
-                        const activeSub = subtitles.find(s => s.id === activeSubtitleIdRef.current);
-                        if (activeSub && newTime >= activeSub.startTime && newTime <= activeSub.endTime) {
-                           if (Math.abs(currentAudioRef.current.currentTime - (newTime - activeSub.startTime)) > 0.05) {
-                               currentAudioRef.current.currentTime = newTime - activeSub.startTime;
-                           }
-                        }
-                     }
+                     const clickX = e.clientX - rect.left;
+                     handleTimelineScrub(clickX / zoomLevel);
                    }
                  }}
                  onPointerUp={(e) => {
                    setIsScrubbing(false);
                    isScrubbingRef.current = false;
                    e.currentTarget.releasePointerCapture(e.pointerId);
-                   if (videoRef.current && e.currentTarget.dataset.wasPlaying === 'true') {
-                     videoRef.current.play().catch(console.error);
+                   
+                   if (e.currentTarget.dataset.wasPlaying === 'true') {
+                     if (videoRef.current && videoUrl) {
+                       videoRef.current.play().catch(console.error);
+                     } else {
+                       setIsPlaying(true);
+                       lastFrameTimeRef.current = performance.now();
+                     }
                      delete e.currentTarget.dataset.wasPlaying;
                    }
                  }}
               >
                 {/* Background grid / ruler */}
-                <div className="absolute top-0 left-0 right-0 h-6 border-b border-slate-800">
+                <div className="sticky top-0 left-0 right-0 h-8 border-b border-slate-800 bg-slate-900 z-50">
                   {timelineRuler}
                 </div>
 
-                {/* Video Track */}
-                <div className="absolute top-8 left-0 right-0 h-10 flex">
-                   <div 
-                     className="bg-slate-800/80 border border-slate-700 rounded-sm relative overflow-hidden flex items-center pl-2 text-slate-600 pointer-events-none"
-                     style={{ 
-                       width: videoDuration ? `${(videoDuration / totalDuration) * 100}%` : '100%',
-                       minWidth: '4px'
-                     }}
-                   >
-                     {/* Thumbnail placeholders to look like a timeline track */}
-                     <div className="absolute inset-0 flex opacity-20 object-cover pointer-events-none" style={{ backgroundImage: 'repeating-linear-gradient(90deg, transparent, transparent 40px, rgba(255,255,255,0.05) 40px, rgba(255,255,255,0.05) 42px)' }}></div>
-                     <Film className="w-4 h-4 shrink-0 text-slate-500 mr-2 z-10" />
-                     <span className="text-[10px] font-medium z-10 text-slate-400 truncate">{videoFile ? videoFile.name : 'Untitled Video Track'}</span>
-                   </div>
-                </div>
+                <div className="flex flex-col pt-2">
+                  {/* Video Track */}
+                  <div className="h-[48px] border-b border-slate-800/30 relative group items-center flex">
+                    <div className="sticky left-0 z-20 h-full bg-slate-950/80 border-r border-slate-800 px-2 flex items-center justify-between w-32 shrink-0 select-none">
+                      <div className="flex items-center gap-1.5 overflow-hidden">
+                        <Film className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider truncate">Video</span>
+                      </div>
+                    </div>
+                    <div className="relative flex-1 h-10 ml-2">
+                       <div 
+                         className="bg-slate-800/40 border border-slate-700/50 rounded-sm relative overflow-hidden flex items-center pl-2 text-slate-600 pointer-events-none h-full"
+                         style={{ 
+                           width: `${videoDuration * zoomLevel}px`,
+                           minWidth: '4px'
+                         }}
+                       >
+                         <div className="absolute inset-0 flex opacity-10 object-cover pointer-events-none" style={{ backgroundImage: 'repeating-linear-gradient(90deg, transparent, transparent 60px, rgba(255,255,255,0.1) 60px, rgba(255,255,255,0.1) 62px)' }}></div>
+                         <span className="text-[9px] font-medium z-10 text-slate-500 truncate">{videoFile ? videoFile.name : 'No video'}</span>
+                       </div>
+                    </div>
+                  </div>
 
-                {/* Subtitles & Audio Track */}
-                <div className="absolute top-[76px] left-0 right-0 h-24">
-                  {subtitles.map((sub) => (
-                    <TimelineSubtitleItem 
-                      key={sub.id}
-                      sub={sub}
-                      currentTime={currentTime}
-                      totalDuration={totalDuration}
-                      zoomLevel={zoomLevel}
-                      draggingSub={draggingSub}
-                      handleTimelineDrag={handleTimelineDrag}
-                      handleTimelineDragEnd={handleTimelineDragEnd}
-                      handleToggleLink={handleToggleLink}
-                      videoRef={videoRef}
-                      isActive={currentTime >= sub.startTime && currentTime <= sub.endTime}
-                      isOverlapping={audioOverlaps.has(sub.id)}
-                    />
-                  ))}
+                  {/* Subtitles Track */}
+                  <div className="h-[40px] border-b border-slate-800/30 relative group items-center flex">
+                    <div className="sticky left-0 z-20 h-full bg-slate-950/80 border-r border-slate-800 px-2 flex items-center justify-between w-32 shrink-0 select-none">
+                      <div className="flex items-center gap-1.5 overflow-hidden">
+                        <FileText className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider truncate">Text</span>
+                      </div>
+                    </div>
+                    <div className="relative flex-1 h-full ml-2">
+                      {visibleSubtitles.map((sub) => (
+                        <TimelineClip 
+                          key={`sub-${sub.id}`}
+                          id={sub.id}
+                          type="subtitle"
+                          startTime={sub.startTime}
+                          endTime={sub.endTime}
+                          text={sub.text}
+                          zoomLevel={zoomLevel}
+                          isActive={currentTime >= sub.startTime && currentTime <= sub.endTime}
+                          isSelected={selectedClipId?.id === sub.id && selectedClipId?.type === 'subtitle'}
+                          onSelect={() => setSelectedClipId({ id: sub.id, type: 'subtitle' })}
+                          onDragStart={handleDragPointerDown}
+                          onDragMove={handleDragPointerMove}
+                          onDragEnd={handleDragPointerUp}
+                        />
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Dub Audio Track */}
+                  <div className="h-[52px] border-b border-slate-800/30 relative group items-center flex">
+                    <div className="sticky left-0 z-20 h-full bg-slate-950/80 border-r border-slate-800 px-2 flex items-center justify-between w-32 shrink-0 select-none">
+                      <div className="flex items-center gap-1.5 overflow-hidden">
+                        <Music className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider truncate">Dub</span>
+                      </div>
+                    </div>
+                    <div className="relative flex-1 h-full ml-2">
+                      {visibleSubtitles.map((sub) => sub.audioUrl && (
+                        <TimelineClip 
+                          key={`audio-${sub.id}`}
+                          id={sub.id}
+                          type="audio"
+                          startTime={sub.isLinked ? sub.startTime : (sub.audioStartTime ?? sub.startTime)}
+                          endTime={(sub.isLinked ? sub.startTime : (sub.audioStartTime ?? sub.startTime)) + ((sub.audioTrimEnd ?? (sub.audioDuration || (sub.endTime - sub.startTime))) - (sub.audioTrimStart ?? 0))}
+                          zoomLevel={zoomLevel}
+                          audioUrl={sub.audioUrl}
+                          waveform={sub.waveform}
+                          audioTrimStart={sub.audioTrimStart}
+                          audioTrimEnd={sub.audioTrimEnd}
+                          audioDuration={sub.audioDuration}
+                          engine={sub.engine}
+                          voice={sub.voice}
+                          isActive={currentTime >= (sub.isLinked ? sub.startTime : (sub.audioStartTime ?? sub.startTime)) && currentTime <= ((sub.isLinked ? sub.startTime : (sub.audioStartTime ?? sub.startTime)) + ((sub.audioTrimEnd ?? (sub.audioDuration || (sub.endTime - sub.startTime))) - (sub.audioTrimStart ?? 0)))}
+                          isSelected={selectedClipId?.id === sub.id && selectedClipId?.type === 'audio'}
+                          onSelect={() => setSelectedClipId({ id: sub.id, type: 'audio' })}
+                          onDragStart={handleDragPointerDown}
+                          onDragMove={handleDragPointerMove}
+                          onDragEnd={handleDragPointerUp}
+                          isOverlapping={audioOverlaps.has(sub.id)}
+                        />
+                      ))}
+                    </div>
+                  </div>
                 </div>
 
                 {/* Playhead indicator */}
                 <div 
-                   className="absolute top-0 bottom-0 w-[2px] bg-amber-400 z-40 pointer-events-none shadow-[0_0_8px_rgba(251,191,36,0.5)]"
+                   className="absolute top-0 bottom-0 w-[1.5px] bg-amber-400 z-[100] pointer-events-none shadow-[0_0_8px_rgba(251,191,36,0.5)]"
                    style={{ 
-                     left: `${(currentTime / totalDuration) * 100}%` 
+                     left: `${currentTime * zoomLevel}px` 
                    }}
                 >
                    {/* Playhead handle */}
