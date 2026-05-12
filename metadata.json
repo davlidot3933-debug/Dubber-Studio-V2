@@ -1,0 +1,6 @@
+{
+  "name": "Dubber Studio V2",
+  "description": "A powerful Khmer TTS (Text-to-Speech) dubbing tool and subtitle editor powered by Google AI and Gemini.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
